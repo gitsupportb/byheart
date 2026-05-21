@@ -605,13 +605,10 @@
 
   .word {
     transition: opacity 0.3s, color 0.3s;
-    cursor: default;
+    cursor: pointer;
     border-radius: 2px;
     padding: 0 1px;
   }
-  .word.hidden-word,
-  .word.first-letter,
-  .word.faded { cursor: pointer; }
 
   .word.hidden-word {
     color: transparent;
@@ -963,6 +960,13 @@
 
   .reveal-anim { animation: reveal 0.3s ease-out; }
 
+  /* Reading-aloud highlight */
+  .word.reading {
+    background: var(--highlight);
+    color: var(--ink);
+    border-radius: 2px;
+  }
+
   /* Mobile */
   @media (max-width: 640px) {
     .container { padding: 24px 18px 60px; }
@@ -1107,7 +1111,11 @@
       <div class="mode-header">
         <div>
           <h2 class="mode-title">Read with <em>intention.</em></h2>
-          <p class="mode-desc">Slow down. Read aloud — out loud, in your own voice. Notice the rhythm, the stresses, the meaning. Understanding what you're memorizing is half the battle.</p>
+          <p class="mode-desc">Slow down. Read aloud in your own voice. Notice the rhythm, the stresses, the meaning. Click any word to hear the passage from there.</p>
+        </div>
+        <div class="mode-controls">
+          <button class="btn btn-ghost btn-small" id="readAloudBtn">▶ Read aloud</button>
+          <button class="btn btn-ghost btn-small" id="stopReadBtn" style="display:none;">■ Stop</button>
         </div>
       </div>
       <div class="text-panel" id="readPanel"></div>
@@ -1129,6 +1137,10 @@
         <div class="setting-group">
           <span class="setting-label">Chunk</span>
           <span class="setting-value" id="chunkPos">1 / 1</span>
+        </div>
+        <div class="setting-group" style="flex:1;"></div>
+        <div class="setting-group">
+          <button class="btn btn-ghost btn-small" id="speakChunkBtn">▶ Hear it</button>
         </div>
       </div>
       <div class="text-panel" id="chunkPanel"></div>
@@ -1710,8 +1722,9 @@ function updateProgress() {
 // =============== READ MODE ===============
 function renderRead() {
   const panel = document.getElementById('readPanel');
-  renderTokens(panel, state.words, (span, t) => {
+  renderTokens(panel, state.words, (span, t, wIdx) => {
     span.textContent = t.text;
+    span.addEventListener('click', () => speakFromIndex(wIdx));
   });
 }
 
@@ -1734,6 +1747,9 @@ document.getElementById('prevChunkBtn').addEventListener('click', () => {
 document.getElementById('nextChunkBtn').addEventListener('click', () => {
   state.currentChunk = Math.min(state.sentences.length - 1, state.currentChunk + 1);
   renderChunk();
+});
+document.getElementById('speakChunkBtn').addEventListener('click', () => {
+  speakText(state.sentences[state.currentChunk]);
 });
 
 // =============== CLOZE MODE ===============
@@ -2136,9 +2152,77 @@ function traceDiff(a, b, dp, origRaw, typedRaw) {
   return ops.reverse();
 }
 
+// =============== SPEECH SYNTHESIS ===============
+let currentUtterance = null;
+
+function speakText(text) {
+  if (!('speechSynthesis' in window)) {
+    alert('Text-to-speech not supported in this browser.');
+    return;
+  }
+  window.speechSynthesis.cancel();
+  const utter = new SpeechSynthesisUtterance(text);
+  const ar = isArabic(text);
+  utter.lang = ar ? 'ar-SA' : 'en-US';
+  utter.rate = ar ? 0.85 : 0.9;
+  utter.pitch = 1;
+  // Prefer a matching native voice if available (Chrome / Safari ship Arabic voices).
+  const voices = window.speechSynthesis.getVoices();
+  const match = voices.find(v => v.lang && v.lang.toLowerCase().startsWith(ar ? 'ar' : 'en'));
+  if (match) utter.voice = match;
+  currentUtterance = utter;
+  utter.onend = () => {
+    document.getElementById('readAloudBtn').style.display = '';
+    document.getElementById('stopReadBtn').style.display = 'none';
+    clearReadingHighlight();
+  };
+  window.speechSynthesis.speak(utter);
+}
+
+function speakFromIndex(wIdx) {
+  // Build text from word index onward, preserving original tokenization
+  // so Arabic spacing/punctuation reads naturally.
+  const wordTokens = state.words.filter(t => t.isWord);
+  const startWord = wordTokens[wIdx];
+  if (!startWord) return;
+  const startTokIdx = state.words.indexOf(startWord);
+  const text = state.words.slice(startTokIdx).map(t => t.text).join('');
+  speakText(text);
+  highlightWord(wIdx);
+}
+
+function highlightWord(wIdx) {
+  clearReadingHighlight();
+  const span = document.querySelector(`#readPanel .word[data-idx="${wIdx}"]`);
+  if (span) span.classList.add('reading');
+}
+
+function clearReadingHighlight() {
+  document.querySelectorAll('.word.reading').forEach(w => w.classList.remove('reading'));
+}
+
+document.getElementById('readAloudBtn').addEventListener('click', () => {
+  document.getElementById('readAloudBtn').style.display = 'none';
+  document.getElementById('stopReadBtn').style.display = '';
+  speakText(state.rawText);
+});
+document.getElementById('stopReadBtn').addEventListener('click', () => {
+  window.speechSynthesis.cancel();
+  document.getElementById('readAloudBtn').style.display = '';
+  document.getElementById('stopReadBtn').style.display = 'none';
+});
+
+// Some browsers (Chrome) load voices async — refresh listing once when available.
+if ('speechSynthesis' in window) {
+  window.speechSynthesis.onvoiceschanged = () => {
+    // no-op: speakText reads voices fresh each call
+  };
+}
+
 // =============== NEW TEXT ===============
 document.getElementById('newTextBtn').addEventListener('click', () => {
   if (!confirm('Start over with new text? Your current progress will be cleared.')) return;
+  if ('speechSynthesis' in window) window.speechSynthesis.cancel();
   document.getElementById('practiceScreen').classList.remove('active');
   document.getElementById('setupScreen').style.display = '';
   textInput.value = '';
